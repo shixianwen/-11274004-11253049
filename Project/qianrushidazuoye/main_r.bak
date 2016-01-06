@@ -1,0 +1,162 @@
+/*
+
+*/
+/* Includes ------------------------------------------------------------------*/
+#include "stm32f10x.h"
+#include "sys.h"
+#include "eios.h"
+
+//for ucos
+#include "includes.h"
+
+int __low_level_init(void)
+{
+  SystemInit();
+  return 1;
+}
+
+//--------------------------------------------
+void UART_SendByte(char c);
+void UART_SendStr(char *s);
+
+
+#define STKSIZE 128
+#define STACKSIZE 128
+
+
+///******************任务定义***************///
+OS_STK StackStart[STKSIZE];
+void TaskStart(void *arg);
+
+OS_STK Task1_Stack[STACKSIZE]; 		//task1 stack
+void Task1_Task(void *Id);            	//task1 任务
+
+OS_STK Task2_Stack[STACKSIZE]; 		//task2 stack
+void Task2_Task(void *Id);            	//task2 任务
+
+OS_EVENT *QSem;                //消息队列指针
+void     *QMsgTbl[50];         //消息指针数组
+
+
+//***************************************************
+//建立两个任务：
+//Task0 读取消息队列，按照固定速率发送按键字符到uart
+//Task1 调用I2C函数得到矩阵键盘按键值，按每2秒一个字符的速率发送到消息队列。
+
+//练习：
+//	1） 修改任务Task0，固定每2秒钟发一个字符，没有按键就发送 '.'
+//	2） 修改任务Task1，遇到字符'D'就放到队列最前面
+
+
+/************************************************************************************
+** Function name: Task1
+** Descriptions:  getkey code and send
+************************************************************************************/
+//修改: 把字符'D'放到队列最前面
+
+void Task1(void *Id) 	      	// Task1
+{
+  char  key;
+
+  printf("Task1 key scan\r\n");
+  while(1){
+     if(gKeyPressed){        //在外部中断EXTI4中设定的按键标志
+        gKeyPressed=0;        
+        key=GetKey();         //经过I2C总线读取按键码
+        LEDDisp(4,key&0xf);   //在数码管上显示按键码
+        LEDDisp(5,key>>4);
+        if(key=='D'){         //判断是否'D'键
+          OSQPostFront(QSem, (void *)key);      //把字符'F'放到队列最前面
+        }
+        else{
+          OSQPost(QSem, (void *)key);		//发送键盘编码，冒充指针
+        }
+        OSTimeDly(OS_TICKS_PER_SEC/20);	//extra delay
+     }
+  }
+}
+
+//TaskStart:  读取消息队列，按照固定速率发送按键字符
+void TaskStart(void *arg)
+{
+    u8 err;
+    char rxmsg;
+
+    /* 系统时钟/总线，GPIO，按键， LED，LCD的初始化 */
+    System_Init();    
+
+    //设定systick用来产生100HZ定时中断
+    Tmr_TickInit ();  //setup systick
+
+    //创建消息队列
+    QSem = OSQCreate(&QMsgTbl[0], 50);		
+    //
+    OSQFlush(QSem);
+ 
+    //建立其他任务
+    OSTaskCreate(Task1, (void*)0, Task1_Stack + (STACKSIZE - 1), 5);
+    
+    printf("\r\n\nTask0: print key code \r\n");
+
+    //修改：固定每2秒钟发一个字符，没有按键就发送 '.'
+    while (1)
+    {
+	OSTimeDly(OS_TICKS_PER_SEC*2); 
+//	rxmsg=(char)OSQPend(QSem, 0, &err); //等待队列中的消息
+// 	printf("%c,",rxmsg);	            //发送到uart
+        rxmsg=(char)OSQAccept(QSem,&err);
+	if(rxmsg)		    //ascii code >0
+          printf("%c,",rxmsg);	    //发送到uart
+        else
+          printf(".,");	            //发送到uart
+          
+    }
+}
+
+
+
+/*******************************************************************************
+* Function Name  : main
+* Description    : Main program.
+* Input          : None
+* Output         : None
+* Return         : None
+*******************************************************************************/
+int main(void)
+{
+  //关闭LED发光管显示，函数在bsp.c中
+  LEDLights(0x3f,0);	
+
+  // uCOS初始化
+  OSInit();	
+  //建立第一个应用任务
+  OSTaskCreate(TaskStart, (void*)0, StackStart + (STKSIZE - 1), 4);	//任务优先级=4
+
+  //启动uCOS调度
+  OSStart();  
+  
+  while (1) ;
+}
+
+
+
+#ifdef  USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t* file, uint32_t line)
+{ 
+  /* User can add his own implementation to report the file name and line number,
+     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+
+  /* Infinite loop */
+  while (1)
+  {
+  }
+}
+#endif
+
